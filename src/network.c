@@ -467,7 +467,8 @@ float *network_predict(network net, float *input)
     state.truth = 0;
     state.train = 0;
     state.delta = 0;
-    forward_network(net, state);
+    //forward_network(net, state);
+	yolov2_forward_network_cpu(net, state);
     float *out = get_network_output(net);
     return out;
 }

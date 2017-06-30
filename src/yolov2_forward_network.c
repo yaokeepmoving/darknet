@@ -1,24 +1,31 @@
-#include "yolov2_forward_network.h"
+#include "layer.h"
+#include "network.h"
+#include "option_list.h"
+#include "data.h"
+#include "parser.h"
+#include "image.h"
+#include "utils.h"
+#include "region_layer.h"
+
 
 
 // 4 layers in 1: convolution, batch-normalization, BIAS and activation
 void forward_convolutional_layer_cpu(layer l, network_state state)
 {
-	int out_h = (l.h + 2 * l.pad - l.size) / l.stride + 1;	// convolutional_out_height(l);
-	int out_w = (l.w + 2 * l.pad - l.size) / l.stride + 1;	// convolutional_out_width(l);
+	
+	int out_h = (l.h + 2 * l.pad - l.size) / l.stride + 1;
+	int out_w = (l.w + 2 * l.pad - l.size) / l.stride + 1;
 	int i;
 
 	// fill zero (ALPHA)
 	for (int i = 0; i < l.outputs; ++i) l.output[i] = 0;
 
-
-	printf("\n l.size = %d \n", l.size);
-
 	// l.n - number of filters on this layer
 	// l.c - channels of input-array
 	// l.h - height of input-array
 	// l.w - width of input-array
-	// l.size - width and height of filters (the same size for any filter)
+	// l.size - width and height of filters (the same size for all filters)
+
 
 	// 1. Convolution !!!
 
@@ -58,6 +65,7 @@ void forward_convolutional_layer_cpu(layer l, network_state state)
 				}
 
 
+	
 	int const out_size = out_h*out_w;
 
 	// 2. Batch normalization
@@ -92,8 +100,20 @@ void forward_convolutional_layer_cpu(layer l, network_state state)
 		}
 	}
 
+}
 
-	/*
+/*
+// from file: im2col.c
+void im2col_cpu(float* data_im, int channels, int height, int width,
+int ksize, int stride, int pad, float* data_col);
+
+// from file: gemm.c
+void gemm_nn(int M, int N, int K, float ALPHA,
+float *A, int lda, float *B, int ldb, float *C, int ldc);
+
+// initial implementation of forward_convolutional_layer() - original in the file convolutional_layer.c 
+void forward_convolutional_layer_cpu(layer l, network_state state)
+{
 	int out_h = convolutional_out_height(l);
 	int out_w = convolutional_out_width(l);
 	int i;
@@ -109,22 +129,25 @@ void forward_convolutional_layer_cpu(layer l, network_state state)
 	float *c = l.output;
 
 	// convolution as GEMM (as part of BLAS)
-	for(i = 0; i < l.batch; ++i){
+	for (i = 0; i < l.batch; ++i) {
+		// im2col.c
 		im2col_cpu(state.input, l.c, l.h, l.w,
-		l.size, l.stride, l.pad, b);
-		gemm(0,0,m,n,k,1,a,k,b,n,1,c,n);
+			l.size, l.stride, l.pad, b);
+		// gemm(0,0,m,n,k,1,a,k,b,n,1,c,n);		// gemm.c
+		gemm_nn(m, n, k, 1, a, k, b, n, c, n);	// gemm.c
 		c += n*m;
 		state.input += l.c*l.h*l.w;
 	}
 
-	if(l.batch_normalize){
+	if (l.batch_normalize) {
 		forward_batchnorm_layer(l, state);
 	}
 	add_bias(l.output, l.biases, l.batch, l.n, out_h*out_w);
 
 	activate_array(l.output, m*n*l.batch, l.activation);
-	*/
 }
+*/
+
 
 
 // MAX pooling layer
@@ -176,7 +199,7 @@ void forward_route_layer_cpu(const layer l, network_state state)
 		float *input = state.net.layers[index].output;
 		int input_size = l.input_sizes[i];
 		for (j = 0; j < l.batch; ++j) {
-			copy_cpu(input_size, input + j*input_size, 1, l.output + offset + j*l.outputs, 1);
+			memcpy( l.output + offset + j*l.outputs, input + j*input_size, input_size*sizeof(float) );
 		}
 		offset += input_size;
 	}
@@ -216,24 +239,7 @@ void forward_reorg_layer_cpu(const layer l, network_state state)
 
 
 
-
 // ---- region layer ----
-
-
-static void softmax_tree(float *input, int batch, int inputs, float temp, tree *hierarchy, float *output)
-{
-	int b;
-	for (b = 0; b < batch; ++b) {
-		int i;
-		int count = 0;
-		for (i = 0; i < hierarchy->groups; ++i) {
-			int group_size = hierarchy->group_size[i];
-			softmax(input + b*inputs + count, group_size, temp, output + b*inputs + count);
-			count += group_size;
-		}
-	}
-}
-
 
 static void softmax_cpu(float *input, int n, float temp, float *output)
 {
@@ -252,6 +258,20 @@ static void softmax_cpu(float *input, int n, float temp, float *output)
 		output[i] /= sum;
 	}
 }
+
+static void softmax_tree(float *input, int batch, int inputs, float temp, tree *hierarchy, float *output)
+{
+	int b;
+	for (b = 0; b < batch; ++b) {
+		int i;
+		int count = 0;
+		for (i = 0; i < hierarchy->groups; ++i) {
+			int group_size = hierarchy->group_size[i];
+			softmax_cpu(input + b*inputs + count, group_size, temp, output + b*inputs + count);
+			count += group_size;
+		}
+	}
+}
 // ---
 
 
@@ -261,7 +281,7 @@ void forward_region_layer_cpu(const layer l, network_state state)
 	int i, j, b, t, n;
 	int size = l.coords + l.classes + 1;
 	memcpy(l.output, state.input, l.outputs*l.batch * sizeof(float));
-#ifndef GPU
+
 	//flatten(l.output, l.w*l.h, size*l.n, l.batch, 1);
 	{
 		float *x = l.output;
@@ -284,7 +304,7 @@ void forward_region_layer_cpu(const layer l, network_state state)
 		free(swap);
 	}
 
-#endif
+
 	for (b = 0; b < l.batch; ++b) {
 		for (i = 0; i < l.h*l.w*l.n; ++i) {
 			int index = size*i + b*l.outputs;
@@ -293,8 +313,6 @@ void forward_region_layer_cpu(const layer l, network_state state)
 		}
 	}
 
-
-#ifndef GPU
 	
 	if (l.softmax_tree) {	// Yolo 9000
 		for (b = 0; b < l.batch; ++b) {
@@ -312,9 +330,8 @@ void forward_region_layer_cpu(const layer l, network_state state)
 			}
 		}
 	}
-#endif
-}
 
+}
 
 
 
@@ -330,11 +347,11 @@ void yolov2_forward_network_cpu(network net, network_state state)
 
 		if (l.type == CONVOLUTIONAL) {
 			forward_convolutional_layer_cpu(l, state);
-			printf("\n CONVOLUTIONAL \n");
+			printf("\n CONVOLUTIONAL \t\t l.size = %d  \n", l.size);
 		}
 		else if (l.type == MAXPOOL) {
 			forward_maxpool_layer_cpu(l, state);
-			printf("\n MAXPOOL \n");
+			printf("\n MAXPOOL \t\t l.size = %d  \n", l.size);
 		}
 		else if (l.type == ROUTE) {
 			forward_route_layer_cpu(l, state);
@@ -357,3 +374,95 @@ void yolov2_forward_network_cpu(network net, network_state state)
 	}
 }
 
+
+
+float *network_predict_cpu(network net, float *input)
+{
+	network_state state;
+	state.net = net;
+	state.index = 0;
+	state.input = input;
+	state.truth = 0;
+	state.train = 0;
+	state.delta = 0;
+	yolov2_forward_network_cpu(net, state);
+	//float *out = get_network_output(net);
+	int i;
+	for (i = net.n - 1; i > 0; --i) if (net.layers[i].type != COST) break;
+	return net.layers[i].output;
+}
+
+
+
+// -------------------------------------
+
+#ifdef OPENCV
+#include "opencv2/highgui/highgui_c.h"
+#endif
+
+float *network_predict_gpu_cudnn(network net, float *input);	// yolov2_forward_network_gpu.cu
+
+// only this function uses other functions not from this file
+void test_detector_cpu(char *datacfg, char *cfgfile, char *weightfile, char *filename, float thresh)
+{
+	list *options = read_data_cfg(datacfg);		// option_list.c
+	char *name_list = option_find_str(options, "names", "data/names.list");	// option_list.c
+	char **names = get_labels(name_list);		// data.c
+
+	image **alphabet = load_alphabet();			// image.c
+	network net = parse_network_cfg(cfgfile);	// parser.c
+	if (weightfile) {
+		load_weights(&net, weightfile);			// parser.c
+	}
+	set_batch_network(&net, 1);					// network.c
+	srand(2222222);
+	clock_t time;
+	char buff[256];
+	char *input = buff;
+	int j;
+	float nms = .4;
+	while (1) {
+		if (filename) {
+			strncpy(input, filename, 256);
+		}
+		else {
+			printf("Enter Image Path: ");
+			fflush(stdout);
+			input = fgets(input, 256, stdin);
+			if (!input) return;
+			strtok(input, "\n");
+		}
+		image im = load_image_color(input, 0, 0);		// image.c
+		image sized = resize_image(im, net.w, net.h);	// image.c
+		layer l = net.layers[net.n - 1];
+
+		box *boxes = calloc(l.w*l.h*l.n, sizeof(box));
+		float **probs = calloc(l.w*l.h*l.n, sizeof(float *));
+		for (j = 0; j < l.w*l.h*l.n; ++j) probs[j] = calloc(l.classes, sizeof(float *));
+
+		float *X = sized.data;
+		time = clock();
+		//network_predict(net, X);
+#ifdef GPU
+		network_predict_gpu_cudnn(net, X);
+#else
+		network_predict_cpu(net, X);
+#endif
+		printf("%s: Predicted in %f seconds.\n", input, sec(clock() - time));
+		get_region_boxes(l, 1, 1, thresh, probs, boxes, 0, 0);				// region_layer.c
+		if (nms) do_nms_sort(boxes, probs, l.w*l.h*l.n, l.classes, nms);	// box.c
+		draw_detections(im, l.w*l.h*l.n, thresh, boxes, probs, names, alphabet, l.classes);	// image.c
+		save_image(im, "predictions");	// image.c
+		show_image(im, "predictions");	// image.c
+
+		free_image(im);					// image.c
+		free_image(sized);				// image.c
+		free(boxes);
+		free_ptrs((void **)probs, l.w*l.h*l.n);	// utils.c
+#ifdef OPENCV
+		cvWaitKey(0);
+		cvDestroyAllWindows();
+#endif
+		if (filename) break;
+	}
+}

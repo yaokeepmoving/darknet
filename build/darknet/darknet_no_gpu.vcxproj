@@ -278,7 +278,6 @@
     <ClInclude Include="..\..\src\tree.h" />
     <ClInclude Include="..\..\src\unistd.h" />
     <ClInclude Include="..\..\src\utils.h" />
-    <ClInclude Include="..\..\src\yolov2_forward_network.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
